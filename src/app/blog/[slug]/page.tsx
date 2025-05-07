@@ -1,6 +1,6 @@
 import { sanityClient } from '@/sanity/client'
 import { groq } from 'next-sanity'
-import { getAuth } from '@clerk/nextjs/server'
+import { getAuth, clerkClient } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import { PortableText } from '@portabletext/react'
 import { headers } from 'next/headers'
@@ -11,17 +11,9 @@ type Props = {
 
 export default async function BlogPostPage({ params }: Props) {
   const slug = params.slug
+  const headerList = headers()
+  const { userId } = getAuth({ headers: headerList })
 
-  // ✅ Get Clerk auth headers from request
-  const headersList = headers()
-  const { userId } = getAuth({ headers: headersList })
-
-  // 🔒 Redirect to sign-in if not logged in
-  if (!userId) {
-    redirect(`/sign-in?redirect_url=/blog/${slug}`)
-  }
-
-  // ✅ Fetch blog post from Sanity
   const query = groq`
     *[_type == "post" && slug.current == $slug][0]{
       title,
@@ -32,21 +24,23 @@ export default async function BlogPostPage({ params }: Props) {
   `
   const post = await sanityClient.fetch(query, { slug })
 
-  if (!post) return <div>Not found</div>
+  if (!post) return <div className="text-center p-10">Post not found</div>
 
-  // 🔍 Fetch user metadata using secret key
-  const response = await fetch(`https://api.clerk.com/v1/users/${userId}`, {
-    headers: {
-      Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`,
-    },
-    cache: 'no-store',
-  })
+  const isPremiumPost = post.isPremium
 
-  const user = await response.json()
-  const isPremium = user?.public_metadata?.isPremium === true
+  if (!userId && isPremiumPost) {
+    redirect(`/sign-in?redirect_url=/blog/${slug}`)
+  }
 
-  // ✅ Allow access if post is free or user is premium
-  const canAccess = !post.isPremium || isPremium
+  // If logged in, get user metadata
+  let userIsPremium = false
+
+  if (userId) {
+    const user = await clerkClient.users.getUser(userId)
+    userIsPremium = user?.publicMetadata?.isPremium === true
+  }
+
+  const canAccess = !isPremiumPost || userIsPremium
 
   return (
     <main className="max-w-3xl mx-auto px-6 py-16">
@@ -57,8 +51,13 @@ export default async function BlogPostPage({ params }: Props) {
 
       {!canAccess ? (
         <div className="bg-amber-100 p-4 rounded-lg text-center">
-          This is a <strong>premium article</strong>. Please{' '}
-          <a className="underline text-amber-800">subscribe</a> to unlock it.
+          <p>This is a premium article.</p>
+          <a
+            href="/#pricing"
+            className="underline text-amber-800 font-medium"
+          >
+            Subscribe now to unlock this content.
+          </a>
         </div>
       ) : (
         <article className="prose prose-lg">
